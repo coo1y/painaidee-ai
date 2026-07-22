@@ -1,0 +1,54 @@
+# Full stack: one-shot ingestion -> chat app -> monitoring dashboard.
+# Shared named volumes persist the Chroma index and the SQLite feedback DB.
+#
+#   docker compose up --build
+#   App:       http://localhost:8501
+#   Dashboard: http://localhost:8502
+#
+# Requires a .env file (copy from .env.example and fill in your keys).
+
+services:
+  ingest:
+    build: .
+    command: python -m ingestion.ingest_pipeline
+    env_file: .env
+    environment:
+      - CHROMA_DIR=/app/chroma_db
+      - FEEDBACK_DB=/app/state/feedback.db
+    volumes:
+      - chroma:/app/chroma_db
+      - state:/app/state
+
+  app:
+    build: .
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      - CHROMA_DIR=/app/chroma_db
+      - FEEDBACK_DB=/app/state/feedback.db
+    ports:
+      - "8501:8501"
+    volumes:
+      - chroma:/app/chroma_db
+      - state:/app/state
+
+  dashboard:
+    build: .
+    depends_on:
+      - app
+    command: streamlit run dashboard.py --server.port=8502 --server.address=0.0.0.0
+    env_file: .env
+    environment:
+      - CHROMA_DIR=/app/chroma_db
+      - FEEDBACK_DB=/app/state/feedback.db
+    ports:
+      - "8502:8502"
+    volumes:
+      - chroma:/app/chroma_db
+      - state:/app/state
+
+volumes:
+  chroma:
+  state:
