@@ -98,6 +98,7 @@ def judge(question: str, context: str, answer: str) -> dict:
 
 
 def main() -> None:
+    config.load_cli_keys_from_env()
     if not config.has_openai():
         print("OPENAI_API_KEY not set — LLM evaluation requires OpenAI. Skipping.")
         return

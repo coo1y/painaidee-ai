@@ -83,6 +83,7 @@ def evaluate(method: str, gt: list[dict]) -> dict:
 
 
 def main() -> None:
+    config.load_cli_keys_from_env()
     gt = build_ground_truth()
     print(f"Ground-truth cases: {len(gt)} | k={K} | embeddings={config.EMBEDDING_BACKEND}\n")
 

@@ -7,7 +7,6 @@ every response can be rated 👍/👎 with an optional comment (stored in SQLite
 from __future__ import annotations
 
 import importlib
-import os
 import uuid
 
 import streamlit as st
@@ -15,6 +14,9 @@ import streamlit as st
 from src import config
 from src.agent import answer as agent_answer
 from src.db import init_db, log_interaction, update_feedback
+
+# Never use server-side / .env API keys in the web UI — users enter their own.
+config.scrub_server_api_keys()
 
 # NOTE: st.set_page_config is intentionally NOT called here. Page config is set
 # once in the multipage entrypoint (streamlit_app.py).
@@ -24,7 +26,7 @@ from src.db import init_db, log_interaction, update_feedback
 # One-time setup: ensure the knowledge base exists (auto-ingest on cold start).
 # --------------------------------------------------------------------------
 @st.cache_resource(show_spinner="Preparing knowledge base…")
-def bootstrap() -> dict:
+def bootstrap(has_openai: bool) -> dict:
     init_db()
     import chromadb
     from chromadb.config import Settings
@@ -34,9 +36,14 @@ def bootstrap() -> dict:
     )
     existing = {c.name for c in client.list_collections()}
     needed = {config.ATTRACTIONS_COLLECTION, config.EVENTS_COLLECTION}
-    counts = {}
+    counts: dict = {}
     if not needed.issubset(existing):
-        # Plain (Prefect-free) ingestion keeps cold-start fast on the web app.
+        if not has_openai:
+            return {
+                config.ATTRACTIONS_COLLECTION: 0,
+                config.EVENTS_COLLECTION: 0,
+                "_needs_ingest": True,
+            }
         from ingestion.ingest_pipeline import run_ingestion
 
         counts = run_ingestion(reset=True)
@@ -49,22 +56,13 @@ def bootstrap() -> dict:
 def apply_api_keys() -> None:
     """Apply user-entered API keys (from the sidebar) for this session.
 
-    Keys typed into the sidebar are stored only in ``st.session_state`` (never on
-    disk). We push them into ``config`` + environment variables and reset the
+    Keys typed into the sidebar live only in ``st.session_state`` (never written
+    to disk or ``os.environ``). We push them into ``config`` and reset the
     cached OpenAI/Tavily clients so the new keys take effect immediately.
     """
-    openai_key = (st.session_state.get("openai_api_key") or "").strip()
-    tavily_key = (st.session_state.get("tavily_api_key") or "").strip()
+    config.OPENAI_API_KEY = (st.session_state.get("openai_api_key") or "").strip()
+    config.TAVILY_API_KEY = (st.session_state.get("tavily_api_key") or "").strip()
 
-    if openai_key:
-        config.OPENAI_API_KEY = openai_key
-        os.environ["OPENAI_API_KEY"] = openai_key
-    if tavily_key:
-        config.TAVILY_API_KEY = tavily_key
-        os.environ["TAVILY_API_KEY"] = tavily_key
-
-    # The API clients are @lru_cache'd against the previous key — clear them so
-    # subsequent calls rebuild with the newly supplied key.
     for module_name, factory in (
         ("src.llm", "_client"),
         ("src.embeddings", "_openai_client"),
@@ -98,11 +96,9 @@ def save_comment(msg_idx: int) -> None:
 # --------------------------------------------------------------------------
 # Sidebar
 # --------------------------------------------------------------------------
-# Apply any keys the user already entered this session BEFORE bootstrapping, so
-# the knowledge base and agent use them.
 apply_api_keys()
 
-counts = bootstrap()
+counts = bootstrap(config.has_openai())
 
 with st.sidebar:
     st.header("🗺️ PaiNaiDee AI")
@@ -110,8 +106,8 @@ with st.sidebar:
 
     st.subheader("🔑 API keys")
     st.caption(
-        "Add your own keys to use the assistant. They stay in your browser "
-        "session only — never saved to disk or shared."
+        "Enter your own keys to use the assistant. They stay in this browser "
+        "session only — never saved on the server, to disk, or shared."
     )
     st.text_input(
         "OpenAI API key",
@@ -119,8 +115,7 @@ with st.sidebar:
         type="password",
         placeholder="sk-…",
         on_change=apply_api_keys,
-        help="Required for full-quality answers and semantic (vector) search. "
-        "Get one at https://platform.openai.com/api-keys",
+        help="Required. Get one at https://platform.openai.com/api-keys",
     )
     st.text_input(
         "Tavily API key (optional)",
@@ -128,21 +123,17 @@ with st.sidebar:
         type="password",
         placeholder="tvly-…",
         on_change=apply_api_keys,
-        help="Enables live web search for real-time info (prices, hours, weather). "
-        "Get one at https://app.tavily.com",
+        help="Enables live web search. Get one at https://app.tavily.com",
     )
 
     st.divider()
     st.subheader("System status")
     st.write(f"**Attractions indexed:** {counts.get(config.ATTRACTIONS_COLLECTION, 0)}")
     st.write(f"**Events indexed:** {counts.get(config.EVENTS_COLLECTION, 0)}")
-    st.write(f"**OpenAI:** {'✅' if config.has_openai() else '❌ (offline mode)'}")
-    st.write(f"**Web search (Tavily):** {'✅' if config.has_tavily() else '❌ (disabled)'}")
+    st.write(f"**OpenAI:** {'✅' if config.has_openai() else '❌ (enter key above)'}")
+    st.write(f"**Web search (Tavily):** {'✅' if config.has_tavily() else '❌ (optional)'}")
     if not config.has_openai():
-        st.warning(
-            "No OpenAI key detected — running with local test embeddings and a "
-            "template answer. Paste your **OpenAI API key** above for full quality."
-        )
+        st.warning("Paste your **OpenAI API key** above to chat. Keys are not stored on the server.")
     st.divider()
     st.caption("See the **🧪 Evaluation** and **📊 Dashboard** pages in the sidebar.")
 
@@ -157,7 +148,8 @@ if "messages" not in st.session_state:
         {
             "role": "assistant",
             "content": "Hi! I can recommend attractions and events across Thailand. "
-            "Try: *“cultural riverside towns in eastern Thailand”* or "
+            "Add your **OpenAI API key** in the sidebar, then try: "
+            "*“cultural riverside towns in eastern Thailand”* or "
             "*“festivals in Trat around New Year”*.",
         }
     ]
@@ -190,7 +182,6 @@ for idx, msg in enumerate(st.session_state.messages):
                 f"{r.get('reason', '')}"
             )
 
-        # Feedback widgets (assistant messages that were generated for a query).
         if msg["role"] == "assistant" and msg.get("interaction_id"):
             st.feedback("thumbs", key=f"fb_{idx}", on_change=save_rating, args=(idx,))
             with st.expander("💬 Tell us why (optional)"):
@@ -209,7 +200,10 @@ for idx, msg in enumerate(st.session_state.messages):
 # --------------------------------------------------------------------------
 # Handle new input
 # --------------------------------------------------------------------------
-if prompt := st.chat_input("Ask about places, events, or trip ideas in Thailand…"):
+if prompt := st.chat_input(
+    "Ask about places, events, or trip ideas in Thailand…",
+    disabled=not config.has_openai(),
+):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)

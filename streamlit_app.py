@@ -20,6 +20,11 @@ matplotlib.use("Agg")
 
 import streamlit as st
 
+from src import config
+
+# Never use server-side / .env API keys in the web UI — users enter their own.
+config.scrub_server_api_keys()
+
 # One global page config for the whole app. Must be the first Streamlit command.
 st.set_page_config(
     page_title="PaiNaiDee-AI — Thailand Travel",

@@ -302,6 +302,8 @@ def ingest_flow(reset: bool = True) -> dict[str, int]:
 
 
 def main() -> None:
+    # CLI / Docker ingest may use .env keys; the Streamlit app never does.
+    config.load_cli_keys_from_env()
     parser = argparse.ArgumentParser(description="Ingest TAT data into ChromaDB")
     parser.add_argument(
         "--no-reset",

@@ -183,17 +183,20 @@ git clone <your-repo-url> && cd PaiNaiDee-AI
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Secrets
+# 3. Optional: CLI / Docker keys only (ingest + eval). The chat UI does NOT
+#    read these — each user pastes keys in the sidebar (session-only).
 cp .env.example .env
-# Edit .env: OPENAI_API_KEY (required), TAVILY_API_KEY (optional)
+# Edit .env if you will run ingestion or eval from the command line.
 
 # 4. Ensure TAT JSON files are in data/ (see Data sources above)
 
-# 5. Ingest into ChromaDB (Prefect-orchestrated; applies highlight filters)
+# 5. Ingest into ChromaDB (Prefect-orchestrated; applies highlight filters).
+#    Uses OPENAI_API_KEY from .env via load_cli_keys_from_env().
 python -m ingestion.ingest_pipeline
 
 # 6. Multipage app (Chat · Evaluation · Dashboard)
 streamlit run streamlit_app.py   # → http://localhost:8501
+#    Paste your OpenAI (and optional Tavily) key in the sidebar to chat.
 ```
 
 Standalone alternatives:
@@ -203,8 +206,9 @@ streamlit run app.py             # chat only
 streamlit run dashboard.py       # dashboard only
 ```
 
-**No OpenAI key?** Set `EMBEDDING_BACKEND=local` for an offline smoke test
-(hash embeddings + template answers). Use a real key for production quality.
+**API keys in the UI:** OpenAI (required) and Tavily (optional) are entered in the
+Chat sidebar. They live in `st.session_state` only — not written to disk,
+`.env`, or Streamlit secrets, and not kept as server-side defaults.
 
 ---
 
@@ -214,9 +218,11 @@ Full stack via Docker Compose (ingestion → Streamlit app → dashboard), with
 shared volumes for Chroma and SQLite:
 
 ```bash
-cp .env.example .env     # add your keys
+cp .env.example .env     # keys for the ingest service only
 docker compose up --build
 ```
+
+Chat users still enter their own OpenAI / Tavily keys in the app sidebar.
 
 | Service | URL |
 |---------|-----|
@@ -423,16 +429,16 @@ The app uses **embedded ChromaDB** (no separate DB server):
 
 1. Push the repo to GitHub.
 2. Create a Streamlit Cloud app with **Main file path = `streamlit_app.py`**.
-3. Add secrets (see `.streamlit/secrets.toml.example`):
+3. Deploy **without** putting API keys in Cloud Secrets — each visitor pastes
+   their OpenAI (and optional Tavily) key in the Chat sidebar. Keys stay in that
+   browser session only.
+4. Prefer a pre-built `chroma_db` in the deployment (or run CLI ingest elsewhere)
+   so cold start does not depend on a server-side key. If the index is missing,
+   the first user who enters an OpenAI key can trigger auto-ingest for that
+   session’s embedding backend.
 
-   ```toml
-   OPENAI_API_KEY = "sk-..."
-   TAVILY_API_KEY = "tvly-..."   # optional
-   ```
-
-4. Deploy. On first launch the app can auto-ingest via `run_ingestion()`
-   (highlight filters keep the index to hundreds of documents, not the full
-   ~29k-row dump).
+Optional non-secret overrides (model names, paths) may go in Streamlit secrets;
+see `.streamlit/secrets.toml.example`.
 
 The Evaluation page uses precomputed numbers so it does not call the eval APIs
 live.
@@ -441,14 +447,19 @@ live.
 
 ## Configuration reference
 
-Environment variables (see `.env.example`):
+**Chat UI keys (not env):** users enter `OPENAI_API_KEY` and optional
+`TAVILY_API_KEY` in the sidebar. `src/config.py` starts those values empty and
+never loads them from the server environment for the app.
+
+**CLI / Docker only** (`.env` → `config.load_cli_keys_from_env()` for ingest &
+eval):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `OPENAI_API_KEY` | — | Required for embeddings + chat |
-| `OPENAI_CHAT_MODEL` | see `src/config.py` / `.env` | Chat model |
+| `OPENAI_API_KEY` | — | Required for CLI ingest / eval |
+| `TAVILY_API_KEY` | — | Optional for CLI web-search tests |
+| `OPENAI_CHAT_MODEL` | see `src/config.py` | Chat model |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
-| `TAVILY_API_KEY` | — | Enables web search |
 | `EMBEDDING_BACKEND` | `openai` | `openai` or `local` (offline test) |
 | `CHROMA_DIR` | `./chroma_db` | Vector store path |
 | `FEEDBACK_DB` | `./feedback.db` | SQLite feedback DB |
@@ -482,10 +493,10 @@ Dependency versions are pinned in `requirements.txt`.
 
 1. Clone the repo and use Python 3.10+.
 2. `pip install -r requirements.txt` (versions pinned).
-3. Copy `.env.example` → `.env` and set API keys.
+3. For CLI ingest/eval only: copy `.env.example` → `.env` and set API keys.
 4. Download TAT JSON from the [attraction](https://datacatalog.tat.or.th/dataset/tourist-attraction) and [activity](https://datacatalog.tat.or.th/dataset/tourismactivity) catalog pages into `data/attraction.json` and `data/activity.json` (or use the copies already in the repo if present).
-5. Run `python -m ingestion.ingest_pipeline` (applies highlight filters).
-6. Run `streamlit run streamlit_app.py`.
+5. Run `python -m ingestion.ingest_pipeline` (applies highlight filters; uses `.env` keys).
+6. Run `streamlit run streamlit_app.py` and paste your OpenAI key in the sidebar.
 7. Optional quality checks:
    - `python -m eval.retrieval_eval`
    - `python -m eval.llm_eval`

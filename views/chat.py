@@ -29,7 +29,7 @@ from src.db import init_db, log_interaction, update_feedback
 # One-time setup: ensure the knowledge base exists (auto-ingest on cold start).
 # --------------------------------------------------------------------------
 @st.cache_resource(show_spinner="Preparing knowledge base…")
-def bootstrap() -> dict:
+def bootstrap(has_openai: bool) -> dict:
     init_db()
     import chromadb
     from chromadb.config import Settings
@@ -39,9 +39,16 @@ def bootstrap() -> dict:
     )
     existing = {c.name for c in client.list_collections()}
     needed = {config.ATTRACTIONS_COLLECTION, config.EVENTS_COLLECTION}
-    counts = {}
+    counts: dict = {}
     if not needed.issubset(existing):
-        # Plain (Prefect-free) ingestion keeps cold-start fast on the web app.
+        if not has_openai:
+            # Do not build the index with local hash embeddings — wait for a
+            # user-supplied OpenAI key so vectors match query embeddings.
+            return {
+                config.ATTRACTIONS_COLLECTION: 0,
+                config.EVENTS_COLLECTION: 0,
+                "_needs_ingest": True,
+            }
         from ingestion.ingest_pipeline import run_ingestion
 
         counts = run_ingestion(reset=True)
@@ -54,22 +61,14 @@ def bootstrap() -> dict:
 def apply_api_keys() -> None:
     """Apply user-entered API keys (from the sidebar) for this session.
 
-    Keys typed into the sidebar are stored only in ``st.session_state`` (never on
-    disk). We push them into ``config`` and reset the cached OpenAI/Tavily
-    clients so the new keys take effect immediately.
+    Keys typed into the sidebar live only in ``st.session_state`` (never written
+    to disk or ``os.environ``). We push them into ``config`` and reset the
+    cached OpenAI/Tavily clients so the new keys take effect immediately.
     """
-    openai_key = (st.session_state.get("openai_api_key") or "").strip()
-    tavily_key = (st.session_state.get("tavily_api_key") or "").strip()
+    # Always overwrite — clearing the sidebar field must clear the in-memory key.
+    config.OPENAI_API_KEY = (st.session_state.get("openai_api_key") or "").strip()
+    config.TAVILY_API_KEY = (st.session_state.get("tavily_api_key") or "").strip()
 
-    # The OpenAI/Tavily clients read these config globals and pass api_key
-    # explicitly, so we only need to update config (no os.environ needed).
-    if openai_key:
-        config.OPENAI_API_KEY = openai_key
-    if tavily_key:
-        config.TAVILY_API_KEY = tavily_key
-
-    # The API clients are @lru_cache'd against the previous key — clear them so
-    # subsequent calls rebuild with the newly supplied key.
     for module_name, factory in (
         ("src.llm", "_client"),
         ("src.embeddings", "_openai_client"),
@@ -102,10 +101,9 @@ def save_comment(msg_idx: int) -> None:
 
 def render() -> None:
     """Render the chat page (called by streamlit_app.py)."""
-    # Apply any keys the user already entered this session BEFORE bootstrapping.
     apply_api_keys()
 
-    counts = bootstrap()
+    counts = bootstrap(config.has_openai())
 
     with st.sidebar:
         st.header("🗺️ PaiNaiDee AI")
@@ -113,8 +111,8 @@ def render() -> None:
 
         st.subheader("🔑 API keys")
         st.caption(
-            "Add your own keys to use the assistant. They stay in your browser "
-            "session only — never saved to disk or shared."
+            "Enter your own keys to use the assistant. They stay in this browser "
+            "session only — never saved on the server, to disk, or shared."
         )
         st.text_input(
             "OpenAI API key",
@@ -122,8 +120,7 @@ def render() -> None:
             type="password",
             placeholder="sk-…",
             on_change=apply_api_keys,
-            help="Required for full-quality answers and semantic (vector) search. "
-            "Get one at https://platform.openai.com/api-keys",
+            help="Required. Get one at https://platform.openai.com/api-keys",
         )
         st.text_input(
             "Tavily API key (optional)",
@@ -131,9 +128,15 @@ def render() -> None:
             type="password",
             placeholder="tvly-…",
             on_change=apply_api_keys,
-            help="Enables live web search for real-time info (prices, hours, weather). "
-            "Get one at https://app.tavily.com",
+            help="Enables live web search. Get one at https://app.tavily.com",
         )
+
+        if not config.has_openai():
+            st.warning("Paste your **OpenAI API key** above to chat. Keys are not stored on the server.")
+        elif counts.get("_needs_ingest"):
+            st.info("Key received — preparing the knowledge base…")
+        
+        st.caption("See the **🧪 Evaluation** and **📊 Dashboard** pages in the sidebar.")
 
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
@@ -142,7 +145,8 @@ def render() -> None:
             {
                 "role": "assistant",
                 "content": "Hi! I can recommend attractions and events across Thailand. "
-                "Try: *“cultural riverside towns in eastern Thailand”* or "
+                "Add your **OpenAI API key** in the sidebar, then try: "
+                "*“cultural riverside towns in eastern Thailand”* or "
                 "*“festivals in Trat around New Year”*.",
             }
         ]
@@ -185,7 +189,11 @@ def render() -> None:
                     if msg.get("comment_saved"):
                         st.success("Thanks for the feedback!")
 
-    if prompt := st.chat_input("Ask about places, events, or trip ideas in Thailand…"):
+    chat_enabled = config.has_openai()
+    if prompt := st.chat_input(
+        "Ask about places, events, or trip ideas in Thailand…",
+        disabled=not chat_enabled,
+    ):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
