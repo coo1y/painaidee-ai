@@ -6,6 +6,9 @@ Tourism Authority of Thailand (TAT) data — **attractions** and **events** — 
 optionally calls live **web search** when the knowledge base cannot cover
 real-time facts. Answers are in English, with source citations.
 
+**Try the live demo:** [https://painaidee-ai.streamlit.app/](https://painaidee-ai.streamlit.app/)  
+(Enter your own OpenAI API key in the sidebar — keys stay in your browser session only.)
+
 This README is written for reviewers who did **not** take the course. It explains
 the problem, the data, the application flow, how to run everything, and where
 each **evaluation criterion** is satisfied. See
@@ -26,6 +29,7 @@ each **evaluation criterion** is satisfied. See
 - [Retrieval and best practices](#retrieval-and-best-practices)
 - [Evaluation](#evaluation)
 - [Interface](#interface)
+- [Screenshots](#screenshots)
 - [Monitoring and feedback](#monitoring-and-feedback)
 - [Containerization](#containerization)
 - [Deployment (Streamlit Cloud)](#deployment-streamlit-cloud)
@@ -134,8 +138,10 @@ rank-bm25 · Tavily · Prefect · SQLite · Docker Compose · wordcloud / Plotly
 ├── data/
 │   ├── attraction.json          # TAT attractions (from TAT Data Catalog)
 │   └── activity.json            # TAT events (from TAT Data Catalog)
-├── assets/fonts/
-│   └── Sarabun-Regular.ttf      # Thai-capable font for word clouds
+├── assets/
+│   ├── fonts/
+│   │   └── Sarabun-Regular.ttf  # Thai-capable font for word clouds
+│   └── images/                  # README screenshots (Chat · Eval · Dashboard)
 ├── ingestion/
 │   └── ingest_pipeline.py       # Prefect flow: filter → clean → embed → ChromaDB
 ├── src/
@@ -313,6 +319,7 @@ Compares four methods on `eval/test_data/ground_truth.json`:
 **Best approach: `hybrid+rr`** — used as the app default.
 
 Results are also shown on the **🧪 Evaluation** page (`views/evaluation.py`).
+See [Screenshots → Evaluation](#evaluation-1).
 
 ### LLM evaluation
 
@@ -373,11 +380,48 @@ places/events and briefly explain why. Be concise and practical.
 
 Streamlit multipage UI. Main entrypoint: `streamlit run streamlit_app.py`
 
+**Live demo:** [https://painaidee-ai.streamlit.app/](https://painaidee-ai.streamlit.app/)
+
 | Page | Module | Role |
 |------|--------|------|
 | 🧭 Chat | `views/chat.py` | Conversational recommender + feedback |
 | 🧪 Evaluation | `views/evaluation.py` | Retrieval + LLM eval tables / charts |
 | 📊 Dashboard | `views/dashboard.py` | Monitoring KPIs and charts |
+
+---
+
+## Screenshots
+
+### Chat
+
+Cited recommendations grounded in the TAT knowledge base; optional Tavily web
+search; 👍/👎 feedback. Paste your own API keys in the sidebar (session-only).
+
+![Chat — grounded recommendations](assets/images/1_chat1.png)
+
+![Chat — sources, route, and feedback](assets/images/1_chat2.png)
+
+### Evaluation
+
+Precomputed retrieval and LLM-prompt comparisons (same numbers as the tables
+above).
+
+![Evaluation — retrieval methods](assets/images/2_eval1.png)
+
+![Evaluation — LLM prompt variants](assets/images/2_eval2.png)
+
+### Dashboard
+
+Filters, KPIs, six charts (including Thai word clouds), and a recent-responses
+table.
+
+![Dashboard — filters and KPIs](assets/images/3_monitor1.png)
+
+![Dashboard — feedback ratio and daily volume](assets/images/3_monitor2.png)
+
+![Dashboard — word clouds and latency charts](assets/images/3_monitor3.png)
+
+![Dashboard — recent responses table](assets/images/3_monitor4.png)
 
 ---
 
@@ -410,6 +454,8 @@ Plus:
 - **Refresh data** button
 - **Recent response** table (every logged query + AI answer, not only commented rows)
 
+See [Screenshots → Dashboard](#dashboard) for the live UI.
+
 ---
 
 ## Containerization
@@ -424,6 +470,8 @@ See [Quickstart (Docker)](#quickstart-docker).
 ---
 
 ## Deployment (Streamlit Cloud)
+
+**Live app:** [https://painaidee-ai.streamlit.app/](https://painaidee-ai.streamlit.app/)
 
 The app uses **embedded ChromaDB** (no separate DB server):
 
