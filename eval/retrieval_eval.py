@@ -31,7 +31,7 @@ from src.retrieval import (
 )
 
 K = 3
-GT_PATH = Path(__file__).resolve().parent / "ground_truth.json"
+GT_PATH = Path(__file__).resolve().parent / "test_data/ground_truth.json"
 
 
 def build_ground_truth() -> list[dict]:

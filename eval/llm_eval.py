@@ -1,9 +1,10 @@
-"""LLM output evaluation: compare two prompt variants with an LLM judge.
+"""LLM output evaluation: compare multiple prompt variants with an LLM judge.
 
-Two system prompts are compared on a set of questions:
+Three system prompts are compared on a set of questions:
   - A: "concise" assistant
   - B: "detailed planner" assistant
-Both receive the SAME retrieved context. An LLM judge scores each answer 1-5 on
+  - C: "production" prompt (mirrors src/agent.py `_ANSWER_SYS`)
+All receive the SAME retrieved context. An LLM judge scores each answer 1-5 on
 faithfulness (grounded in context) and helpfulness. The higher-average prompt
 wins. Requires OPENAI_API_KEY.
 
@@ -22,7 +23,7 @@ from src.agent import _format_kb_source
 from src.llm import chat, chat_json
 from src.retrieval import retrieve
 
-QUESTIONS_PATH = Path(__file__).resolve().parent / "questions.json"
+QUESTIONS_PATH = Path(__file__).resolve().parent / "test_data/questions.json"
 
 DEFAULT_QUESTIONS = [
     "Recommend a cultural riverside old town to visit.",
@@ -41,6 +42,13 @@ PROMPT_B = (
     "short intro then bullet points (name, why to go, practical tip). Use ONLY the "
     "provided context and cite sources as [S#]. If a detail is missing, say so."
 )
+PROMPT_C = (
+    "You are PaiNaiDee, a friendly Thailand travel assistant. Answer in English. "
+    "Use ONLY the provided context and cite every claim with its tag, e.g. [S1]. "
+    "If the context lacks specific details (exact price, current hours, "
+    "availability), say so honestly instead of inventing them. Recommend concrete "
+    "places/events and briefly explain why. Be concise and practical."
+)
 
 JUDGE_SYS = (
     "You are a strict evaluator. Given a question, the retrieved CONTEXT, and an "
@@ -51,7 +59,9 @@ JUDGE_SYS = (
 
 
 def load_questions() -> list[str]:
+    print(QUESTIONS_PATH.exists())
     if QUESTIONS_PATH.exists():
+        print("Loading questions from", QUESTIONS_PATH)
         return json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))
     return DEFAULT_QUESTIONS
 
@@ -93,7 +103,11 @@ def main() -> None:
         return
 
     questions = load_questions()
-    variants = {"A (concise)": PROMPT_A, "B (detailed)": PROMPT_B}
+    variants = {
+        "A": PROMPT_A,
+        "B": PROMPT_B,
+        "C": PROMPT_C,
+    }
     totals = {name: {"faithfulness": 0.0, "helpfulness": 0.0} for name in variants}
 
     for q in questions:

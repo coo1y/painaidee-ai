@@ -5,6 +5,7 @@ without extra configuration beyond the API keys.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -15,6 +16,11 @@ try:
 except Exception:  # pragma: no cover - dotenv is optional at runtime
     pass
 
+# Disable ChromaDB telemetry and silence its noisy (harmless) posthog logger,
+# which spams "capture() takes 1 positional argument but 3 were given".
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
+
 
 # --- Paths --------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,8 +28,8 @@ DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "data"))
 CHROMA_DIR = Path(os.getenv("CHROMA_DIR", PROJECT_ROOT / "chroma_db"))
 FEEDBACK_DB = Path(os.getenv("FEEDBACK_DB", PROJECT_ROOT / "feedback.db"))
 
-ATTRACTION_FILE = DATA_DIR / "attraction-sub.json"
-ACTIVITY_FILE = DATA_DIR / "activity-sub.json"
+ATTRACTION_FILE = DATA_DIR / "attraction.json"
+ACTIVITY_FILE = DATA_DIR / "activity.json"
 
 # --- Collections --------------------------------------------------------
 ATTRACTIONS_COLLECTION = "attractions"
@@ -31,7 +37,7 @@ EVENTS_COLLECTION = "events"
 
 # --- OpenAI -------------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
 OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
 # --- Web search ---------------------------------------------------------

@@ -6,6 +6,8 @@ every response can be rated 👍/👎 with an optional comment (stored in SQLite
 """
 from __future__ import annotations
 
+import importlib
+import os
 import uuid
 
 import streamlit as st
@@ -14,7 +16,8 @@ from src import config
 from src.agent import answer as agent_answer
 from src.db import init_db, log_interaction, update_feedback
 
-st.set_page_config(page_title="PaiNaiDee-AI — Thailand Travel", page_icon="🧭", layout="centered")
+# NOTE: st.set_page_config is intentionally NOT called here. Page config is set
+# once in the multipage entrypoint (streamlit_app.py).
 
 
 # --------------------------------------------------------------------------
@@ -43,6 +46,36 @@ def bootstrap() -> dict:
     return counts
 
 
+def apply_api_keys() -> None:
+    """Apply user-entered API keys (from the sidebar) for this session.
+
+    Keys typed into the sidebar are stored only in ``st.session_state`` (never on
+    disk). We push them into ``config`` + environment variables and reset the
+    cached OpenAI/Tavily clients so the new keys take effect immediately.
+    """
+    openai_key = (st.session_state.get("openai_api_key") or "").strip()
+    tavily_key = (st.session_state.get("tavily_api_key") or "").strip()
+
+    if openai_key:
+        config.OPENAI_API_KEY = openai_key
+        os.environ["OPENAI_API_KEY"] = openai_key
+    if tavily_key:
+        config.TAVILY_API_KEY = tavily_key
+        os.environ["TAVILY_API_KEY"] = tavily_key
+
+    # The API clients are @lru_cache'd against the previous key — clear them so
+    # subsequent calls rebuild with the newly supplied key.
+    for module_name, factory in (
+        ("src.llm", "_client"),
+        ("src.embeddings", "_openai_client"),
+        ("src.agent", "_tavily"),
+    ):
+        try:
+            getattr(importlib.import_module(module_name), factory).cache_clear()
+        except Exception:  # pragma: no cover - defensive; never block the UI
+            pass
+
+
 def save_rating(msg_idx: int) -> None:
     """Callback: persist the 👍/👎 selection for a message."""
     key = f"fb_{msg_idx}"
@@ -65,11 +98,41 @@ def save_comment(msg_idx: int) -> None:
 # --------------------------------------------------------------------------
 # Sidebar
 # --------------------------------------------------------------------------
+# Apply any keys the user already entered this session BEFORE bootstrapping, so
+# the knowledge base and agent use them.
+apply_api_keys()
+
 counts = bootstrap()
 
 with st.sidebar:
-    st.header("🧭 PaiNaiDee-AI")
-    st.caption("Agentic RAG travel assistant for Thailand")
+    st.header("🗺️ PaiNaiDee AI")
+    st.caption("Agentic AI travel assistant for Thailand")
+
+    st.subheader("🔑 API keys")
+    st.caption(
+        "Add your own keys to use the assistant. They stay in your browser "
+        "session only — never saved to disk or shared."
+    )
+    st.text_input(
+        "OpenAI API key",
+        key="openai_api_key",
+        type="password",
+        placeholder="sk-…",
+        on_change=apply_api_keys,
+        help="Required for full-quality answers and semantic (vector) search. "
+        "Get one at https://platform.openai.com/api-keys",
+    )
+    st.text_input(
+        "Tavily API key (optional)",
+        key="tavily_api_key",
+        type="password",
+        placeholder="tvly-…",
+        on_change=apply_api_keys,
+        help="Enables live web search for real-time info (prices, hours, weather). "
+        "Get one at https://app.tavily.com",
+    )
+
+    st.divider()
     st.subheader("System status")
     st.write(f"**Attractions indexed:** {counts.get(config.ATTRACTIONS_COLLECTION, 0)}")
     st.write(f"**Events indexed:** {counts.get(config.EVENTS_COLLECTION, 0)}")
@@ -77,11 +140,11 @@ with st.sidebar:
     st.write(f"**Web search (Tavily):** {'✅' if config.has_tavily() else '❌ (disabled)'}")
     if not config.has_openai():
         st.warning(
-            "No OPENAI_API_KEY detected — running with local test embeddings and a "
-            "template answer. Set your key in `.env` for full quality."
+            "No OpenAI key detected — running with local test embeddings and a "
+            "template answer. Paste your **OpenAI API key** above for full quality."
         )
     st.divider()
-    st.caption("Run the monitoring dashboard with:\n\n`streamlit run dashboard.py`")
+    st.caption("See the **🧪 Evaluation** and **📊 Dashboard** pages in the sidebar.")
 
 
 # --------------------------------------------------------------------------

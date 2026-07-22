@@ -46,13 +46,23 @@ def _all_docs(name: str) -> tuple[list[str], list[str], tuple[dict, ...]]:
     return data["ids"], data["documents"], tuple(data["metadatas"])
 
 
+def _tokenize(text: str) -> list[str]:
+    return _TOKEN_RE.findall((text or "").lower())
+
+
+@lru_cache(maxsize=4)
+def _bm25_index(name: str):
+    """Build and cache the BM25 index for a collection (expensive at scale)."""
+    ids, docs, metas = _all_docs(name)
+    corpus = [_tokenize(d) for d in docs]
+    bm25 = BM25Okapi(corpus) if corpus else None
+    return ids, docs, metas, bm25
+
+
 def clear_caches() -> None:
     _all_docs.cache_clear()
     get_collection.cache_clear()
-
-
-def _tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall((text or "").lower())
+    _bm25_index.cache_clear()
 
 
 # --------------------------------------------------------------------------
@@ -166,11 +176,9 @@ def bm25_search(
     where_ids: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
     """BM25 lexical search over the collection documents."""
-    ids, docs, metas = _all_docs(collection_name)
-    if not docs:
+    ids, docs, metas, bm25 = _bm25_index(collection_name)
+    if not docs or bm25 is None:
         return []
-    corpus = [_tokenize(d) for d in docs]
-    bm25 = BM25Okapi(corpus)
     scores = bm25.get_scores(_tokenize(query))
     order = sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)
     hits = []

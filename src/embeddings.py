@@ -8,10 +8,13 @@ mode retrieval quality comes almost entirely from the BM25 lexical channel.
 from __future__ import annotations
 
 import hashlib
+import logging
 from functools import lru_cache
 from typing import List
 
 from . import config
+
+logger = logging.getLogger("painaidee.embeddings")
 
 
 # --------------------------------------------------------------------------
@@ -57,8 +60,10 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
     if config.use_openai_embeddings():
         # Batch to stay well under token limits.
         out: List[List[float]] = []
-        for i in range(0, len(texts), 128):
+        total = len(texts)
+        for i in range(0, total, 128):
             out.extend(_openai_embed(texts[i : i + 128]))
+            logger.info("Embedded %d/%d documents (OpenAI)", min(i + 128, total), total)
         return out
     return [_local_embed(t) for t in texts]
 

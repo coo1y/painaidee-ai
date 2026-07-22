@@ -46,7 +46,12 @@ def clean_html(raw: Optional[str]) -> str:
     """Strip HTML tags/entities and collapse whitespace. Safe on None."""
     if not raw:
         return ""
-    text = BeautifulSoup(raw, "html.parser").get_text(separator=" ")
+    text = str(raw)
+    # Only run the HTML parser when the value actually looks like markup;
+    # otherwise BeautifulSoup emits MarkupResemblesLocatorWarning for plain
+    # URLs/filenames (e.g. website fields) that get passed through here.
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(separator=" ")
     text = html.unescape(text)
     text = text.replace("\xa0", " ").replace("\r", " ").replace("\n", " ")
     return _WS_RE.sub(" ", text).strip()

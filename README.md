@@ -1,151 +1,166 @@
-# 🧭 PaiNaiDee-AI — Agentic RAG Travel Recommender for Thailand
+# PaiNaiDee-AI — Agentic RAG Travel Recommender for Thailand
 
-PaiNaiDee-AI ("ไปไหนดี" = *"where should I go?"*) is an end-to-end **Agentic
-RAG** application that helps travelers plan trips in Thailand. It combines a
-curated knowledge base of **attractions** and **events** (from the Tourism
-Authority of Thailand) with **live web search**, and answers questions in
-English with cited sources.
+PaiNaiDee-AI ("ไปไหนดี" = *"where should I go?"*) is an end-to-end **Agentic RAG**
+application for planning trips in Thailand. It grounds answers in official
+Tourism Authority of Thailand (TAT) data — **attractions** and **events** — and
+optionally calls live **web search** when the knowledge base cannot cover
+real-time facts. Answers are in English, with source citations.
 
-> Built as a course capstone. This README is written for readers who did **not**
-> take the course — it explains the problem, the data, the flow, and how to run
-> everything. The [Evaluation criteria](#-evaluation-criteria-mapping) section
-> maps each rubric item to where it lives in the repo.
-
----
-
-## 📋 Table of contents
-- [Problem description](#-problem-description)
-- [The data](#-the-data)
-- [Architecture & flow](#-architecture--flow)
-- [Project structure](#-project-structure)
-- [Quickstart (local)](#-quickstart-local)
-- [Quickstart (Docker)](#-quickstart-docker)
-- [Usage examples](#-usage-examples)
-- [Ingestion pipeline](#-ingestion-pipeline)
-- [Retrieval & best practices](#-retrieval--best-practices)
-- [Evaluation](#-evaluation)
-- [Monitoring & feedback](#-monitoring--feedback)
-- [Deployment (Streamlit Cloud)](#-deployment-streamlit-cloud)
-- [Configuration reference](#-configuration-reference)
-- [Evaluation criteria mapping](#-evaluation-criteria-mapping)
+This README is written for reviewers who did **not** take the course. It explains
+the problem, the data, the application flow, how to run everything, and where
+each **evaluation criterion** is satisfied. See
+[Evaluation criteria mapping](#evaluation-criteria-mapping).
 
 ---
 
-## 🎯 Problem description
+## Table of contents
 
-Planning a trip in Thailand means juggling scattered information: *what* to see,
-*where* it is, *when* events happen, and *practical* details (hours, contacts,
-prices). Official tourism data is rich but stored in raw, Thai-language,
-HTML-laden database exports that are hard to query in natural language. General
-chatbots, meanwhile, hallucinate opening times and event dates.
+- [Problem description](#problem-description)
+- [The data](#the-data)
+- [Architecture and flow](#architecture-and-flow)
+- [Project structure](#project-structure)
+- [Quickstart (local)](#quickstart-local)
+- [Quickstart (Docker)](#quickstart-docker)
+- [Usage examples](#usage-examples)
+- [Ingestion pipeline](#ingestion-pipeline)
+- [Retrieval and best practices](#retrieval-and-best-practices)
+- [Evaluation](#evaluation)
+- [Interface](#interface)
+- [Monitoring and feedback](#monitoring-and-feedback)
+- [Containerization](#containerization)
+- [Deployment (Streamlit Cloud)](#deployment-streamlit-cloud)
+- [Configuration reference](#configuration-reference)
+- [Evaluation criteria mapping](#evaluation-criteria-mapping)
+- [Reproducibility checklist](#reproducibility-checklist)
 
-**PaiNaiDee-AI solves this** by grounding an LLM in an official TAT dataset:
+---
+
+## Problem description
+
+**Score target: 2/2** — clear problem and solution.
+
+Planning a trip in Thailand means combining scattered information: *what* to see,
+*where* it is, *when* events happen, and practical details (hours, contacts,
+prices). Official TAT exports are rich but hard to query: Thai-heavy narrative
+fields, HTML markup, free-text opening hours, and time-bound events mixed with
+evergreen attractions. General chatbots often invent opening times and dates.
+
+**PaiNaiDee-AI solves this** by grounding an LLM in TAT data:
 
 - Ask in plain English (e.g. *"cultural riverside towns in eastern Thailand"* or
   *"festivals near Trat around New Year"*).
 - The app retrieves relevant **attractions** and **events**, filters events by
-  **date range** and **province**, and generates a concise, **cited** answer.
-- For **real-time** facts the KB can't cover (current ticket prices, weather,
-  transport), a **web-search tool** is triggered automatically.
-- Every answer can be rated 👍/👎 with a comment, feeding a **monitoring
-  dashboard**.
+  **province** and **date range**, re-ranks candidates, and returns a **cited**
+  answer.
+- For facts missing from the KB (live ticket prices, weather, transport), a
+  **web-search tool** (Tavily) can run.
+- Every answer can be rated 👍/👎 with an optional comment; usage feeds a
+  **monitoring dashboard**.
 
-The system is explicitly designed **not to invent** missing facts (prices,
-hours, availability) — it says so honestly and cites what it used.
-
----
-
-## 🗂 The data
-
-Two JSON exports from the **Tourism Authority of Thailand (TAT)** live in
-`data/`:
-
-| File | Entity | Key fields |
-|------|--------|-----------|
-| `attraction-sub.json` | Static attractions | `ATT_NAME_TH/EN`, `ATT_DETAIL_TH` (HTML), `ATT_HILIGHT`, `ATT_LOCATION` (lat,lng), `PROVINCE_NAME_TH`, `ATT_CATEGORY_LABEL`, `ATT_START_END`, contacts |
-| `activity-sub.json` | Scheduled events | `NAME`, `DESCRIPTION` (HTML), `STARTDATE`, `ENDDATE`, `PROVINCE`, `LOCATION`, `EVENTTARGETGROUP`, `TATEVENTTYPENAME`, ticket prices, contacts |
-
-**Structure note:** each file is a single-key JSON object whose key is the
-original SQL query and whose value is the list of rows. The ingestion pipeline
-unwraps this automatically.
-
-**Data characteristics handled by the pipeline:** HTML tags in narrative fields,
-Thai + English bilingual text (events are often Thai-only), `"lat, lng"`
-coordinate strings, Oracle `LISTAGG` artifacts (trailing `,`), and mixed
-Buddhist/Gregorian year references.
-
-The two files shipped here are **small samples** (3 records each) intended for
-schema design and reproducible demos. The pipeline scales unchanged to the full
-export — just replace the files.
+The system is designed **not to invent** missing facts — it states uncertainty
+and cites `[S#]` (knowledge base) or `[W#]` (web) sources.
 
 ---
 
-## 🏛 Architecture & flow
+## The data
+
+JSON exports from the **Tourism Authority of Thailand (TAT)** live in `data/`:
+
+| File | Entity | Approx. size | Key fields |
+|------|--------|--------------|------------|
+| `attraction.json` | Static attractions | ~8.6k records | `ATT_NAME_TH/EN`, `ATT_DETAIL_TH` (HTML), `ATT_HILIGHT`, `ATT_LOCATION` (`lat, lng`), `PROVINCE_NAME_TH`, `ATT_CATEGORY_LABEL`, `ATT_START_END`, contacts |
+| `activity.json` | Scheduled events | ~20k records | `NAME`, `DESCRIPTION` (HTML), `STARTDATE`, `ENDDATE`, `PROVINCE`, `LOCATION`, `EVENTTARGETGROUP`, `TATEVENTTYPENAME`, ticket prices, contacts |
+
+Optional small samples (`attraction-sub.json`, `activity-sub.json`) remain for
+schema demos. The pipeline defaults to the full files via `src/config.py`
+(`ATTRACTION_FILE` / `ACTIVITY_FILE`).
+
+**Structure note:** each export is a single-key JSON object whose key is the
+original SQL query and whose value is the row array. Ingestion unwraps this
+automatically (`src/utils.py` → `load_tat_export`).
+
+**Cleaning handled by the pipeline:** HTML stripping, bilingual text, `"lat, lng"`
+parsing, Oracle `LISTAGG` trailing commas, ISO dates + epoch-day metadata for
+event filtering, and duplicate-ID / batch upserts for large corpora.
+
+---
+
+## Architecture and flow
 
 ```
-                         ┌─────────────────────────────────────────────┐
-   data/*.json  ──────►  │  Ingestion pipeline (Prefect)                │
-                         │  clean HTML · normalize · embed · metadata   │
-                         └───────────────┬─────────────────────────────┘
-                                         ▼
-                         ┌─────────────────────────────────────────────┐
-                         │  ChromaDB (persistent, embedded)             │
-                         │  collections: attractions | events           │
-                         └───────────────┬─────────────────────────────┘
-                                         ▼
- user query ─► Query rewriting ─► Hybrid search (dense + BM25, RRF)
-                                     │      + metadata filter (province, dates)
-                                     ▼
-                                  Re-ranking (LLM cross-scoring)
-                                     │
-                    Router ──────────┤ needs real-time / weak coverage?
-                       │             ▼
-                       │        Tavily web search  ── (optional) ──┐
-                       ▼                                           ▼
-                 Grounded prompt  ──►  OpenAI LLM  ──►  cited English answer
-                                                            │
-                                                            ▼
-                                        SQLite log + 👍/👎 feedback ─► Dashboard
+   data/*.json  ──►  Prefect ingestion (clean · normalize · embed · metadata)
+                              │
+                              ▼
+                    ChromaDB (attractions | events)
+                              │
+ user query ──► Query rewriting ──► Hybrid search (dense + BM25, RRF)
+                                      + metadata filter (province, dates)
+                                      ▼
+                                   LLM re-ranking
+                                      │
+                         Router ──────┤ need real-time / weak KB?
+                            │         ▼
+                            │    Tavily web search (optional)
+                            ▼
+              Grounded prompt ──► OpenAI LLM ──► cited English answer
+                                                      │
+                                                      ▼
+                               SQLite log + 👍/👎 feedback ──► Dashboard
 ```
 
-**Tech stack:** Streamlit (UI + dashboard) · OpenAI (LLM + embeddings) ·
-ChromaDB (vector store) · rank-bm25 (lexical) · Tavily (web search) · Prefect
-(ingestion orchestration) · SQLite (feedback) · Docker Compose.
+**Stack:** Streamlit (multipage UI) · OpenAI (chat + embeddings) · ChromaDB ·
+rank-bm25 · Tavily · Prefect · SQLite · Docker Compose · wordcloud / Plotly
+(dashboard).
 
 ---
 
-## 📁 Project structure
+## Project structure
 
 ```text
 .
 ├── data/
-│   ├── attraction-sub.json      # static attractions (TAT)
-│   └── activity-sub.json        # scheduled events (TAT)
+│   ├── attraction.json          # full TAT attractions
+│   ├── activity.json            # full TAT events
+│   ├── attraction-sub.json      # tiny sample (optional)
+│   └── activity-sub.json
+├── assets/fonts/
+│   └── Sarabun-Regular.ttf      # Thai-capable font for word clouds
 ├── ingestion/
-│   └── ingest_pipeline.py       # Prefect flow: clean → embed → load ChromaDB
+│   └── ingest_pipeline.py       # Prefect flow: clean → embed → ChromaDB
 ├── src/
 │   ├── config.py                # env-driven configuration
-│   ├── utils.py                 # HTML strip, coord/date parse, normalization
-│   ├── embeddings.py            # OpenAI (+ offline test) embeddings
-│   ├── llm.py                   # OpenAI chat wrapper (+ JSON mode)
-│   ├── retrieval.py             # hybrid search, query rewrite, metadata filter, rerank
-│   ├── agent.py                 # router agent + Tavily web-search tool + synthesis
-│   └── db.py                    # SQLite interaction log & feedback
+│   ├── utils.py                 # HTML strip, coord/date parse
+│   ├── embeddings.py            # OpenAI (+ offline local) embeddings
+│   ├── llm.py                   # OpenAI chat wrapper
+│   ├── retrieval.py             # hybrid search, rewrite, filter, rerank
+│   ├── agent.py                 # router + Tavily + answer synthesis
+│   └── db.py                    # SQLite interaction / feedback store
 ├── eval/
-│   ├── retrieval_eval.py        # vector vs bm25 vs hybrid vs hybrid+rerank
-│   └── llm_eval.py              # compare 2 prompts with an LLM judge
-├── app.py                       # Streamlit chat UI + feedback
-├── dashboard.py                 # monitoring dashboard (6 charts)
+│   ├── retrieval_eval.py        # vector vs bm25 vs hybrid vs hybrid+rr
+│   ├── llm_eval.py              # prompts A / B / C + LLM judge
+│   └── test_data/
+│       ├── ground_truth.json    # 100 labeled retrieval cases
+│       └── questions.json       # LLM-eval question set
+├── views/
+│   ├── chat.py                  # Chat page (UI + feedback)
+│   ├── evaluation.py            # Evaluation results page
+│   └── dashboard.py             # Monitoring dashboard (6+ charts)
+├── streamlit_app.py             # multipage entrypoint (Chat · Eval · Dashboard)
+├── app.py                       # chat UI (standalone)
+├── dashboard.py                 # dashboard (standalone)
 ├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt             # pinned versions
+├── docker-compose.yml           # ingest → app → dashboard
+├── requirements.txt             # pinned dependency versions
 ├── .env.example
+├── .streamlit/
+│   ├── config.toml
+│   └── secrets.toml.example
 └── README.md
 ```
 
 ---
 
-## 🚀 Quickstart (local)
+## Quickstart (local)
 
 **Prerequisites:** Python 3.10+.
 
@@ -153,206 +168,297 @@ ChromaDB (vector store) · rank-bm25 (lexical) · Tavily (web search) · Prefect
 # 1. Clone and enter
 git clone <your-repo-url> && cd PaiNaiDee-AI
 
-# 2. Create a virtual env and install pinned dependencies
+# 2. Virtual env + pinned dependencies
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Configure secrets
+# 3. Secrets
 cp .env.example .env
-#   Edit .env and set OPENAI_API_KEY (required) and TAVILY_API_KEY (optional)
+# Edit .env: OPENAI_API_KEY (required), TAVILY_API_KEY (optional)
 
-# 4. Ingest the data into ChromaDB (orchestrated with Prefect)
+# 4. Ingest into ChromaDB (Prefect-orchestrated)
 python -m ingestion.ingest_pipeline
 
-# 5. Run the chat app
-streamlit run app.py            # ➜ http://localhost:8501
-
-# 6. (Optional) Run the monitoring dashboard in another terminal
-streamlit run dashboard.py      # ➜ http://localhost:8502
+# 5. Multipage app (Chat · Evaluation · Dashboard)
+streamlit run streamlit_app.py   # → http://localhost:8501
 ```
 
-> **No OpenAI key handy?** Set `EMBEDDING_BACKEND=local` in `.env` to run a fully
-> **offline smoke test** (deterministic hash embeddings + a template answer).
-> Retrieval still works via the BM25 channel. This mode is for wiring/tests only
-> — set your real key for production-quality answers.
+Standalone alternatives:
+
+```bash
+streamlit run app.py             # chat only
+streamlit run dashboard.py       # dashboard only
+```
+
+**No OpenAI key?** Set `EMBEDDING_BACKEND=local` for an offline smoke test
+(hash embeddings + template answers). Use a real key for production quality.
 
 ---
 
-## 🐳 Quickstart (Docker)
+## Quickstart (Docker)
 
-Everything (ingestion → app → dashboard) is orchestrated by Docker Compose with
-shared volumes for the Chroma index and the SQLite feedback DB.
+Full stack via Docker Compose (ingestion → Streamlit app → dashboard), with
+shared volumes for Chroma and SQLite:
 
 ```bash
 cp .env.example .env     # add your keys
 docker compose up --build
 ```
 
-- Chat app: <http://localhost:8501>
-- Dashboard: <http://localhost:8502>
+| Service | URL |
+|---------|-----|
+| Chat app (`app.py`) | http://localhost:8501 |
+| Dashboard (`dashboard.py`) | http://localhost:8502 |
 
-The `ingest` service runs once and populates a named volume; `app` starts only
-after ingestion completes successfully.
+The `ingest` service runs once and must succeed before `app` starts.
 
 ---
 
-## 💬 Usage examples
+## Usage examples
 
 | You ask | What happens |
 |---------|--------------|
-| *"Recommend a cultural riverside old town in eastern Thailand."* | Query rewritten → hybrid search on `attractions` → reranked → cited answer (e.g. Chanthaboon Waterfront Community). |
-| *"Any festivals in Trat around New Year?"* | Rewriter extracts province `ตราด` + date window → event metadata filter → cited event answer with dates. |
-| *"How much is a ticket to the Phuket Boat Show right now?"* | KB lacks live price → router triggers **Tavily** web search → answer blends KB + web with `[W#]` citations and a note that prices should be verified. |
+| *"Recommend a cultural riverside old town in eastern Thailand."* | Query rewrite → hybrid retrieval on attractions → re-rank → cited answer. |
+| *"Any festivals in Trat around New Year?"* | Rewriter extracts province + date window → event metadata filter → cited event. |
+| *"How much is a ticket to the Phuket Boat Show right now?"* | Router may trigger **Tavily**; answer blends KB + web with `[W#]` citations. |
 
-Each assistant reply shows a **📚 Sources** expander, a route indicator (KB vs
-KB+Web), and 👍/👎 buttons with an optional comment box.
+Each reply shows a **Sources** expander, a route caption (KB vs KB+Web), and
+👍/👎 feedback with an optional comment.
 
 ---
 
-## 🔧 Ingestion pipeline
+## Ingestion pipeline
 
-`ingestion/ingest_pipeline.py` is a **Prefect** flow (`painaidee-ingestion`) with
-tasks that:
+**Score target: 2/2** — automated ingestion with a dedicated tool (**Prefect**).
 
-1. **Load & normalize** — unwrap the SQL-keyed JSON, strip HTML
-   (BeautifulSoup), parse `"lat,lng"`, normalize dates to ISO + epoch-days,
-   split `LISTAGG` lists.
-2. **Build collections** — embed documents (OpenAI `text-embedding-3-small`) and
-   upsert into two ChromaDB collections, `attractions` and `events`, with
-   searchable metadata (province, dates as epoch-days, coordinates, contacts).
+`ingestion/ingest_pipeline.py` defines flow `painaidee-ingestion`:
 
-Run it as an orchestrated flow:
+1. **Load & normalize** — unwrap SQL-keyed JSON, strip HTML (BeautifulSoup),
+   parse coordinates/dates, build bilingual documents, attach filterable
+   metadata.
+2. **Build collections** — embed with OpenAI `text-embedding-3-small` (or local
+   backend), upsert into Chroma collections `attractions` and `events` (batched,
+   de-duplicated by ID).
 
 ```bash
 python -m ingestion.ingest_pipeline          # reset + rebuild
-python -m ingestion.ingest_pipeline --no-reset  # incremental upsert
+python -m ingestion.ingest_pipeline --no-reset
 ```
 
-A Prefect-free `run_ingestion()` function is also exposed and is used by the
-Streamlit app to auto-build the KB on first launch (handy for Streamlit Cloud).
+`run_ingestion()` is a Prefect-free path used by the Streamlit app for cold-start
+auto-ingest (useful on Streamlit Cloud).
 
 ---
 
-## 🔎 Retrieval & best practices
+## Retrieval and best practices
 
-Implemented in `src/retrieval.py`:
+Implemented in `src/retrieval.py` and used by `src/agent.py`:
 
-- **Hybrid search** — dense vector search (Chroma) **+** BM25 lexical search
-  (`rank-bm25`), fused with **Reciprocal Rank Fusion**.
-- **Query rewriting** — an LLM rewrites the user question into optimized search
-  terms and extracts structured filters (Thai province name, date window,
-  source preference).
-- **Metadata filtering** — events are pre-filtered by **date-range overlap** and
-  **province** before semantic search, with a graceful fallback if a strict
-  filter empties the result set.
-- **Re-ranking** — an LLM cross-scores candidates 0–10 and reorders the top-k.
+| Best practice | Implementation | Criterion |
+|---------------|----------------|-----------|
+| **Hybrid search** | Dense (Chroma) + BM25 (`rank-bm25`), fused with Reciprocal Rank Fusion | +1 |
+| **Document re-ranking** | LLM scores candidates 0–10 and reorders top-k | +1 |
+| **User query rewriting** | LLM rewrites search terms and extracts province / date / source filters | +1 |
 
-The router (`src/agent.py`) then decides whether to also call the **Tavily**
-web-search tool (real-time facts or weak KB coverage), and synthesizes a grounded
-answer that cites every claim as `[S#]` (knowledge base) or `[W#]` (web).
+Also included: **metadata filtering** (event date-range overlap + province) with
+fallback if a strict filter returns empty.
+
+The live app default is **query rewrite → hybrid search → re-ranking**, which
+won the retrieval evaluation (`hybrid+rr`).
+
+The router in `src/agent.py` decides whether to call **Tavily**, then synthesizes
+a grounded English answer with `[S#]` / `[W#]` citations.
 
 ---
 
-## 📊 Evaluation
+## Evaluation
+
+**Score targets:** Retrieval evaluation **2/2**, LLM evaluation **2/2**
+(multiple approaches compared; best approach used in the app).
 
 ### Retrieval evaluation
+
 ```bash
 python -m eval.retrieval_eval
 ```
-Compares **four** approaches — `vector`, `bm25`, `hybrid`, `hybrid+rerank` — on
-Recall@k and MRR@k. Uses `eval/ground_truth.json` if present, otherwise
-auto-generates a proxy set. On the small sample data these scores are a smoke
-test; with the full dataset + curated queries they differentiate approaches. The
-app ships with **hybrid + re-ranking** as the default.
+
+Compares four methods on `eval/test_data/ground_truth.json` (**100** cases:
+50 attractions + 50 events):
+
+| Method | Recall@3 | MRR@3 |
+|--------|----------|-------|
+| vector | 0.200 | 0.180 |
+| bm25 | 0.500 | 0.408 |
+| hybrid | 0.460 | 0.302 |
+| **hybrid+rr** | **0.620** | **0.605** |
+
+**Best approach: `hybrid+rr`** — used as the app default.
+
+Results are also shown on the **🧪 Evaluation** page (`views/evaluation.py`).
 
 ### LLM evaluation
+
 ```bash
-python -m eval.llm_eval      # requires OPENAI_API_KEY
+python -m eval.llm_eval    # requires OPENAI_API_KEY
 ```
-Compares **two prompt variants** (concise vs. detailed planner) on the same
-retrieved context, scored by an **LLM judge** on faithfulness and helpfulness.
-The higher-scoring prompt is reported.
+
+Compares **three** system prompts on the same retrieved context, scored by an
+LLM judge (faithfulness + helpfulness, 1–5). Questions live in
+`eval/test_data/questions.json`.
+
+| Variant | Faithfulness | Helpfulness | Overall |
+|---------|--------------|-------------|---------|
+| A · concise | 4.90 | 4.67 | 4.79 |
+| B · detailed planner | 4.81 | 4.67 | 4.74 |
+| **C · production** | 4.81 | **4.90** | **4.86** |
+
+**Best prompt: C · production** — this is the system prompt in `src/agent.py`
+(`_ANSWER_SYS`).
+
+> Large question sets are expensive (many sequential OpenAI calls). Prefer a
+> modest `questions.json` for routine runs; the Evaluation page stores the
+> reported numbers for demos without re-running the API.
 
 ---
 
-## 📈 Monitoring & feedback
+## Interface
 
-- **Feedback collection** — every response has 👍/👎 buttons (Streamlit
-  `st.feedback`) plus an optional free-text comment. All interactions (query,
-  response, route, provinces, latency, rating, comment, timestamp) are logged to
-  **SQLite** (`feedback.db`) via `src/db.py`.
-- **Dashboard** (`dashboard.py`) — KPIs + **6 charts**:
-  1. Positive vs negative feedback (donut)
-  2. Daily query volume (line)
-  3. Top provinces recommended (bar)
-  4. Route usage: KB vs KB+Web (pie)
-  5. Response latency distribution (histogram)
-  6. Common feedback keywords (bar)
-  - plus a recent-comments table with sentiment highlighting.
+**Score target: 2/2** — Streamlit UI.
 
-> _Add screenshots here_: `docs/app.png`, `docs/dashboard.png`. In Streamlit you
-> can record a short preview video from the top-right menu and drag it into this
-> README on GitHub.
+Main entrypoint: `streamlit run streamlit_app.py`
+
+| Page | Module | Role |
+|------|--------|------|
+| 🧭 Chat | `views/chat.py` | Conversational recommender + feedback |
+| 🧪 Evaluation | `views/evaluation.py` | Retrieval + LLM eval tables / charts |
+| 📊 Dashboard | `views/dashboard.py` | Monitoring KPIs and charts |
 
 ---
 
-## ☁️ Deployment (Streamlit Cloud)
+## Monitoring and feedback
 
-The app uses **embedded ChromaDB** (no separate DB server), so it deploys to
-Streamlit Cloud directly:
+**Score target: 2/2** — user feedback **and** a dashboard with **≥5 charts**.
 
-1. Push this repo to GitHub.
-2. Create a new Streamlit Cloud app pointing at `app.py`.
-3. In **App settings → Secrets**, add:
+### Feedback collection
+
+In Chat, each answer supports:
+
+- Streamlit `st.feedback` 👍 / 👎
+- Optional free-text comment
+
+Stored in SQLite (`feedback.db`) via `src/db.py`: query, response, route,
+provinces, latency, rating, comment, timestamp.
+
+### Dashboard (≥6 visuals)
+
+`views/dashboard.py` / `dashboard.py`:
+
+1. Positive vs negative feedback (donut)
+2. Daily query volume (vertical bar chart, date on X-axis)
+3. Top provinces recommended (**word cloud**, Thai font)
+4. Common feedback keywords (**word cloud**)
+5. Response latency distribution (histogram)
+6. Average latency — last 3 hours, 30-minute buckets (line)
+
+Plus:
+
+- Top filters: **date range** + **sentiment**
+- **Refresh data** button
+- **Recent response** table (every logged query + AI answer, not only commented rows)
+
+---
+
+## Containerization
+
+**Score target: 2/2** — full `docker-compose` for the stack.
+
+| Artifact | Role |
+|----------|------|
+| `Dockerfile` | Streamlit application image |
+| `docker-compose.yml` | `ingest` → `app` → `dashboard` with shared volumes |
+
+See [Quickstart (Docker)](#quickstart-docker).
+
+---
+
+## Deployment (Streamlit Cloud)
+
+**Bonus target: +2** — cloud deployment.
+
+The app uses **embedded ChromaDB** (no separate DB server):
+
+1. Push the repo to GitHub.
+2. Create a Streamlit Cloud app with **Main file path = `streamlit_app.py`**.
+3. Add secrets (see `.streamlit/secrets.toml.example`):
+
    ```toml
    OPENAI_API_KEY = "sk-..."
    TAVILY_API_KEY = "tvly-..."   # optional
    ```
-4. Deploy. On first launch the app auto-ingests the data into a local Chroma
-   store (`run_ingestion()`), so no manual step is required.
+
+4. Deploy. On first launch the app can auto-ingest via `run_ingestion()`.
+
+**Cold start note:** embedding ~29k documents on first Cloud boot is slow/costly.
+Prefer a pre-built index workflow or a trimmed dataset for demos. The Evaluation
+page uses precomputed numbers so it does not call the eval APIs live.
 
 ---
 
-## ⚙️ Configuration reference
+## Configuration reference
 
-All settings are environment variables (see `.env.example`):
+Environment variables (see `.env.example`):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `OPENAI_API_KEY` | — | Required for real embeddings + chat. |
-| `OPENAI_CHAT_MODEL` | `gpt-4o-mini` | Chat/completion model. |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model. |
-| `TAVILY_API_KEY` | — | Enables the web-search tool (skipped if empty). |
-| `EMBEDDING_BACKEND` | `openai` | `openai` or `local` (offline test only). |
-| `CHROMA_DIR` | `./chroma_db` | Vector store location. |
-| `FEEDBACK_DB` | `./feedback.db` | SQLite feedback DB. |
-| `DATA_DIR` | `./data` | Source JSON location. |
+| `OPENAI_API_KEY` | — | Required for embeddings + chat |
+| `OPENAI_CHAT_MODEL` | `gpt-4o-mini` (example) | Chat model (override in `.env`) |
+| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `TAVILY_API_KEY` | — | Enables web search |
+| `EMBEDDING_BACKEND` | `openai` | `openai` or `local` (offline test) |
+| `CHROMA_DIR` | `./chroma_db` | Vector store path |
+| `FEEDBACK_DB` | `./feedback.db` | SQLite feedback DB |
+| `DATA_DIR` | `./data` | Source JSON directory |
 
 Dependency versions are pinned in `requirements.txt`.
 
 ---
 
-## ✅ Evaluation criteria mapping
+## Evaluation criteria mapping
 
-| Criterion | Where |
-|-----------|-------|
-| **Problem description** | [Problem description](#-problem-description) |
-| **Retrieval flow** (KB + LLM) | `src/retrieval.py` + `src/agent.py` |
-| **Retrieval evaluation** (multiple approaches) | `eval/retrieval_eval.py` (vector/bm25/hybrid/hybrid+rerank) |
-| **LLM evaluation** (multiple approaches) | `eval/llm_eval.py` (2 prompts + judge) |
-| **Interface** | `app.py` (Streamlit UI) |
-| **Ingestion pipeline** (automated tool) | `ingestion/ingest_pipeline.py` (Prefect) |
-| **Monitoring** (feedback + dashboard ≥5 charts) | `app.py` feedback + `dashboard.py` (6 charts) |
-| **Containerization** (full docker-compose) | `Dockerfile`, `docker-compose.yml` |
-| **Reproducibility** | This README + pinned `requirements.txt` + included data |
-| **Best practice: hybrid search** | `src/retrieval.py` (`hybrid_search`) |
-| **Best practice: re-ranking** | `src/retrieval.py` (`rerank`) |
-| **Best practice: query rewriting** | `src/retrieval.py` (`rewrite_query`) |
-| **Bonus: cloud deployment** | [Streamlit Cloud](#-deployment-streamlit-cloud) |
+| Criterion | Points | Where in this project |
+|-----------|--------|------------------------|
+| **Problem description** | 2 | [Problem description](#problem-description) |
+| **Retrieval flow** (KB + LLM) | 2 | `src/retrieval.py`, `src/agent.py`, ChromaDB |
+| **Retrieval evaluation** (multiple approaches; best used) | 2 | `eval/retrieval_eval.py`, `eval/test_data/ground_truth.json`; app uses **hybrid+rr** |
+| **LLM evaluation** (multiple approaches; best used) | 2 | `eval/llm_eval.py` (prompts A/B/C); app uses **prompt C** in `src/agent.py` |
+| **Interface** | 2 | Streamlit multipage UI — `streamlit_app.py`, `views/` |
+| **Ingestion pipeline** | 2 | Prefect flow — `ingestion/ingest_pipeline.py` |
+| **Monitoring** (feedback + ≥5 charts) | 2 | Chat feedback + `views/dashboard.py` (6 charts + table) |
+| **Containerization** | 2 | `Dockerfile` + `docker-compose.yml` (ingest, app, dashboard) |
+| **Reproducibility** | 2 | This README, pinned `requirements.txt`, accessible `data/` |
+| **Hybrid search** | +1 | `src/retrieval.py` (`hybrid_search`) + retrieval eval |
+| **Document re-ranking** | +1 | `src/retrieval.py` (`rerank`) + retrieval eval |
+| **User query rewriting** | +1 | `src/retrieval.py` (`rewrite_query`) |
+| **Bonus: cloud deployment** | +2 | [Streamlit Cloud](#deployment-streamlit-cloud) |
 
 ---
 
-## 🙏 Data attribution
+## Reproducibility checklist
 
-Tourism data © **Tourism Authority of Thailand (TAT)**. Sample data included for
-educational/demo purposes.
+1. Clone the repo and use Python 3.10+.
+2. `pip install -r requirements.txt` (versions pinned).
+3. Copy `.env.example` → `.env` and set API keys.
+4. Ensure `data/attraction.json` and `data/activity.json` are present.
+5. Run `python -m ingestion.ingest_pipeline`.
+6. Run `streamlit run streamlit_app.py`.
+7. Optional quality checks:
+   - `python -m eval.retrieval_eval`
+   - `python -m eval.llm_eval`
+8. Or: `docker compose up --build`.
+
+---
+
+## Data attribution
+
+Tourism data © **Tourism Authority of Thailand (TAT)**. Included for
+educational / demo purposes.

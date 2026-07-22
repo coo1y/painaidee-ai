@@ -27,6 +27,8 @@ sys.path.insert(0, str(_ROOT))
 # different Prefect version's ~/.prefect database (reproducible on any machine).
 os.environ.setdefault("PREFECT_HOME", str(_ROOT / ".prefect"))
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+# Route the embedding progress logger through Prefect's log handlers.
+os.environ.setdefault("PREFECT_LOGGING_EXTRA_LOGGERS", "painaidee.embeddings")
 
 import chromadb
 from chromadb.config import Settings
@@ -186,6 +188,16 @@ def normalize_event(rec: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 def load_and_normalize_core(path: str, kind: str) -> list[dict[str, Any]]:
     records = load_tat_export(path)
+
+    # Keep the curated subset only — full TAT dumps are too large for Chroma.
+    if kind == "attraction":
+        records = [r for r in records if r.get("ATT_HILIGHT") is not None]
+    else:
+        records = [
+            r for r in records if str(r.get("TAT_HIGHLIGHT", "")).upper() == "TRUE"
+        ]
+    
+    print(f"Loaded {len(records)} {kind} records")
     fn = normalize_attraction if kind == "attraction" else normalize_event
     normalized = [fn(r) for r in records]
     # Drop records without any usable text.
@@ -209,14 +221,34 @@ def build_collection_core(
     )
     if not items:
         return 0
+
+    # De-duplicate by id (source data may repeat IDs); keep the last occurrence.
+    # Chroma requires unique ids within a single upsert call.
+    unique: dict[str, dict[str, Any]] = {}
+    for it in items:
+        unique[it["id"]] = it
+    items = list(unique.values())
+
     documents = [it["document"] for it in items]
     embeddings = embed_texts(documents)
-    collection.upsert(
-        ids=[it["id"] for it in items],
-        documents=documents,
-        metadatas=[it["metadata"] for it in items],
-        embeddings=embeddings,
-    )
+    ids = [it["id"] for it in items]
+    metadatas = [it["metadata"] for it in items]
+
+    # Chroma caps the number of records per upsert call; batch to stay under it.
+    try:
+        max_batch = int(client.get_max_batch_size())
+    except Exception:
+        max_batch = 100
+    batch_size = max(1, min(max_batch, 100))
+
+    for i in range(0, len(ids), batch_size):
+        sl = slice(i, i + batch_size)
+        collection.upsert(
+            ids=ids[sl],
+            documents=documents[sl],
+            metadatas=metadatas[sl],
+            embeddings=embeddings[sl],
+        )
     return collection.count()
 
 

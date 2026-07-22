@@ -8,12 +8,15 @@ env/
 
 # Secrets
 .env
+.streamlit/secrets.toml
 
 # Data stores / artifacts
-chroma_db/
+!chroma_db/chroma.sqlite3
+chroma_db/**
 feedback.db
-*.sqlite
-*.sqlite3
+!*.sqlite
+!*.sqlite3
+*.example
 
 # OS
 .DS_Store
