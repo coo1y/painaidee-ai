@@ -37,8 +37,6 @@ each **evaluation criterion** is satisfied. See
 
 ## Problem description
 
-**Score target: 2/2** — clear problem and solution.
-
 Planning a trip in Thailand means combining scattered information: *what* to see,
 *where* it is, *when* events happen, and practical details (hours, contacts,
 prices). Official TAT exports are rich but hard to query: Thai-heavy narrative
@@ -66,29 +64,44 @@ and cites `[S#]` (knowledge base) or `[W#]` (web) sources.
 
 JSON exports from the **Tourism Authority of Thailand (TAT)** live in `data/`:
 
-| File | Entity | Approx. size | Key fields |
-|------|--------|--------------|------------|
-| `attraction.json` | Static attractions | ~8.6k records | `ATT_NAME_TH/EN`, `ATT_DETAIL_TH` (HTML), `ATT_HILIGHT`, `ATT_LOCATION` (`lat, lng`), `PROVINCE_NAME_TH`, `ATT_CATEGORY_LABEL`, `ATT_START_END`, contacts |
-| `activity.json` | Scheduled events | ~20k records | `NAME`, `DESCRIPTION` (HTML), `STARTDATE`, `ENDDATE`, `PROVINCE`, `LOCATION`, `EVENTTARGETGROUP`, `TATEVENTTYPENAME`, ticket prices, contacts |
+| File | Entity | Records (raw) | Key fields |
+|------|--------|---------------|------------|
+| `attraction.json` | Static attractions | 8,634 | `ATT_NAME_TH/EN`, `ATT_DETAIL_TH` (HTML), `ATT_HILIGHT`, `ATT_LOCATION` (`lat, lng`), `PROVINCE_NAME_TH`, `ATT_CATEGORY_LABEL`, `ATT_START_END`, contacts |
+| `activity.json` | Scheduled events | 20,334 | `NAME`, `DESCRIPTION` (HTML), `STARTDATE`, `ENDDATE`, `PROVINCE`, `LOCATION`, `EVENTTARGETGROUP`, `TATEVENTTYPENAME`, `TAT_HIGHLIGHT`, ticket prices, contacts |
 
-Optional small samples (`attraction-sub.json`, `activity-sub.json`) remain for
-schema demos. The pipeline defaults to the full files via `src/config.py`
-(`ATTRACTION_FILE` / `ACTIVITY_FILE`).
+### Data sources (official TAT Open Data)
+
+| Dataset | Catalog page |
+|---------|--------------|
+| Tourist attractions | [ชุดข้อมูลแหล่งท่องเที่ยว](https://datacatalog.tat.or.th/dataset/tourist-attraction) |
+| Tourism activities / events | [ชุดข้อมูลกิจกรรมท่องเที่ยว](https://datacatalog.tat.or.th/dataset/tourismactivity) |
+
+Both are public Open Data Common datasets published by TAT (JSON downloads on
+the catalog pages above). Place the downloaded files as
+`data/attraction.json` and `data/activity.json`.
 
 **Structure note:** each export is a single-key JSON object whose key is the
 original SQL query and whose value is the row array. Ingestion unwraps this
 automatically (`src/utils.py` → `load_tat_export`).
 
+**Ingestion filters (smaller vector DB):** the full dumps are curated before
+embedding so Chroma stays manageable:
+
+| Source | Filter in `ingestion/ingest_pipeline.py` | Approx. kept |
+|--------|------------------------------------------|--------------|
+| Attractions | `ATT_HILIGHT is not None` | ~493 |
+| Events | `TAT_HIGHLIGHT == "TRUE"` | ~451 |
+
 **Cleaning handled by the pipeline:** HTML stripping, bilingual text, `"lat, lng"`
 parsing, Oracle `LISTAGG` trailing commas, ISO dates + epoch-day metadata for
-event filtering, and duplicate-ID / batch upserts for large corpora.
+event filtering, and duplicate-ID / batch upserts.
 
 ---
 
 ## Architecture and flow
 
 ```
-   data/*.json  ──►  Prefect ingestion (clean · normalize · embed · metadata)
+   data/*.json  ──►  Prefect ingestion (filter · clean · embed · metadata)
                               │
                               ▼
                     ChromaDB (attractions | events)
@@ -119,14 +132,12 @@ rank-bm25 · Tavily · Prefect · SQLite · Docker Compose · wordcloud / Plotly
 ```text
 .
 ├── data/
-│   ├── attraction.json          # full TAT attractions
-│   ├── activity.json            # full TAT events
-│   ├── attraction-sub.json      # tiny sample (optional)
-│   └── activity-sub.json
+│   ├── attraction.json          # TAT attractions (from TAT Data Catalog)
+│   └── activity.json            # TAT events (from TAT Data Catalog)
 ├── assets/fonts/
 │   └── Sarabun-Regular.ttf      # Thai-capable font for word clouds
 ├── ingestion/
-│   └── ingest_pipeline.py       # Prefect flow: clean → embed → ChromaDB
+│   └── ingest_pipeline.py       # Prefect flow: filter → clean → embed → ChromaDB
 ├── src/
 │   ├── config.py                # env-driven configuration
 │   ├── utils.py                 # HTML strip, coord/date parse
@@ -139,7 +150,7 @@ rank-bm25 · Tavily · Prefect · SQLite · Docker Compose · wordcloud / Plotly
 │   ├── retrieval_eval.py        # vector vs bm25 vs hybrid vs hybrid+rr
 │   ├── llm_eval.py              # prompts A / B / C + LLM judge
 │   └── test_data/
-│       ├── ground_truth.json    # 100 labeled retrieval cases
+│       ├── ground_truth.json    # labeled retrieval cases
 │       └── questions.json       # LLM-eval question set
 ├── views/
 │   ├── chat.py                  # Chat page (UI + feedback)
@@ -176,10 +187,12 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env: OPENAI_API_KEY (required), TAVILY_API_KEY (optional)
 
-# 4. Ingest into ChromaDB (Prefect-orchestrated)
+# 4. Ensure TAT JSON files are in data/ (see Data sources above)
+
+# 5. Ingest into ChromaDB (Prefect-orchestrated; applies highlight filters)
 python -m ingestion.ingest_pipeline
 
-# 5. Multipage app (Chat · Evaluation · Dashboard)
+# 6. Multipage app (Chat · Evaluation · Dashboard)
 streamlit run streamlit_app.py   # → http://localhost:8501
 ```
 
@@ -229,14 +242,15 @@ Each reply shows a **Sources** expander, a route caption (KB vs KB+Web), and
 
 ## Ingestion pipeline
 
-**Score target: 2/2** — automated ingestion with a dedicated tool (**Prefect**).
+Automated ingestion with **Prefect** (`ingestion/ingest_pipeline.py`, flow
+`painaidee-ingestion`):
 
-`ingestion/ingest_pipeline.py` defines flow `painaidee-ingestion`:
-
-1. **Load & normalize** — unwrap SQL-keyed JSON, strip HTML (BeautifulSoup),
-   parse coordinates/dates, build bilingual documents, attach filterable
-   metadata.
-2. **Build collections** — embed with OpenAI `text-embedding-3-small` (or local
+1. **Load & filter** — unwrap SQL-keyed JSON; keep only highlighted records
+   (`ATT_HILIGHT` for attractions, `TAT_HIGHLIGHT == TRUE` for events) so the
+   vector DB stays smaller than the full dump.
+2. **Normalize** — strip HTML (BeautifulSoup), parse coordinates/dates, build
+   bilingual documents, attach filterable metadata.
+3. **Build collections** — embed with OpenAI `text-embedding-3-small` (or local
    backend), upsert into Chroma collections `attractions` and `events` (batched,
    de-duplicated by ID).
 
@@ -254,11 +268,11 @@ auto-ingest (useful on Streamlit Cloud).
 
 Implemented in `src/retrieval.py` and used by `src/agent.py`:
 
-| Best practice | Implementation | Criterion |
-|---------------|----------------|-----------|
-| **Hybrid search** | Dense (Chroma) + BM25 (`rank-bm25`), fused with Reciprocal Rank Fusion | +1 |
-| **Document re-ranking** | LLM scores candidates 0–10 and reorders top-k | +1 |
-| **User query rewriting** | LLM rewrites search terms and extracts province / date / source filters | +1 |
+| Best practice | Implementation |
+|---------------|----------------|
+| **Hybrid search** | Dense (Chroma) + BM25 (`rank-bm25`), fused with Reciprocal Rank Fusion |
+| **Document re-ranking** | LLM scores candidates 0–10 and reorders top-k |
+| **User query rewriting** | LLM rewrites search terms and extracts province / date / source filters |
 
 Also included: **metadata filtering** (event date-range overlap + province) with
 fallback if a strict filter returns empty.
@@ -273,8 +287,7 @@ a grounded English answer with `[S#]` / `[W#]` citations.
 
 ## Evaluation
 
-**Score targets:** Retrieval evaluation **2/2**, LLM evaluation **2/2**
-(multiple approaches compared; best approach used in the app).
+Multiple approaches are compared; the best ones are used in the app.
 
 ### Retrieval evaluation
 
@@ -282,8 +295,7 @@ a grounded English answer with `[S#]` / `[W#]` citations.
 python -m eval.retrieval_eval
 ```
 
-Compares four methods on `eval/test_data/ground_truth.json` (**100** cases:
-50 attractions + 50 events):
+Compares four methods on `eval/test_data/ground_truth.json`:
 
 | Method | Recall@3 | MRR@3 |
 |--------|----------|-------|
@@ -306,14 +318,44 @@ Compares **three** system prompts on the same retrieved context, scored by an
 LLM judge (faithfulness + helpfulness, 1–5). Questions live in
 `eval/test_data/questions.json`.
 
+#### Prompt variants (`eval/llm_eval.py`)
+
+**A · concise**
+
+```text
+You are PaiNaiDee, a Thailand travel assistant. Answer in English, concisely
+(2-4 sentences). Use ONLY the provided context and cite sources as [S#].
+Do not invent details.
+```
+
+**B · detailed planner**
+
+```text
+You are PaiNaiDee, an expert Thailand trip planner. Answer in English with a
+short intro then bullet points (name, why to go, practical tip). Use ONLY the
+provided context and cite sources as [S#]. If a detail is missing, say so.
+```
+
+**C · production** (mirrors `src/agent.py` `_ANSWER_SYS`)
+
+```text
+You are PaiNaiDee, a friendly Thailand travel assistant. Answer in English.
+Use ONLY the provided context and cite every claim with its tag, e.g. [S1].
+If the context lacks specific details (exact price, current hours,
+availability), say so honestly instead of inventing them. Recommend concrete
+places/events and briefly explain why. Be concise and practical.
+```
+
+#### Results
+
 | Variant | Faithfulness | Helpfulness | Overall |
 |---------|--------------|-------------|---------|
 | A · concise | 4.90 | 4.67 | 4.79 |
 | B · detailed planner | 4.81 | 4.67 | 4.74 |
 | **C · production** | 4.81 | **4.90** | **4.86** |
 
-**Best prompt: C · production** — this is the system prompt in `src/agent.py`
-(`_ANSWER_SYS`).
+**Best prompt: C · production** — this is the system prompt used in the live app
+(`src/agent.py`).
 
 > Large question sets are expensive (many sequential OpenAI calls). Prefer a
 > modest `questions.json` for routine runs; the Evaluation page stores the
@@ -323,9 +365,7 @@ LLM judge (faithfulness + helpfulness, 1–5). Questions live in
 
 ## Interface
 
-**Score target: 2/2** — Streamlit UI.
-
-Main entrypoint: `streamlit run streamlit_app.py`
+Streamlit multipage UI. Main entrypoint: `streamlit run streamlit_app.py`
 
 | Page | Module | Role |
 |------|--------|------|
@@ -336,8 +376,6 @@ Main entrypoint: `streamlit run streamlit_app.py`
 ---
 
 ## Monitoring and feedback
-
-**Score target: 2/2** — user feedback **and** a dashboard with **≥5 charts**.
 
 ### Feedback collection
 
@@ -370,8 +408,6 @@ Plus:
 
 ## Containerization
 
-**Score target: 2/2** — full `docker-compose` for the stack.
-
 | Artifact | Role |
 |----------|------|
 | `Dockerfile` | Streamlit application image |
@@ -382,8 +418,6 @@ See [Quickstart (Docker)](#quickstart-docker).
 ---
 
 ## Deployment (Streamlit Cloud)
-
-**Bonus target: +2** — cloud deployment.
 
 The app uses **embedded ChromaDB** (no separate DB server):
 
@@ -396,11 +430,12 @@ The app uses **embedded ChromaDB** (no separate DB server):
    TAVILY_API_KEY = "tvly-..."   # optional
    ```
 
-4. Deploy. On first launch the app can auto-ingest via `run_ingestion()`.
+4. Deploy. On first launch the app can auto-ingest via `run_ingestion()`
+   (highlight filters keep the index to hundreds of documents, not the full
+   ~29k-row dump).
 
-**Cold start note:** embedding ~29k documents on first Cloud boot is slow/costly.
-Prefer a pre-built index workflow or a trimmed dataset for demos. The Evaluation
-page uses precomputed numbers so it does not call the eval APIs live.
+The Evaluation page uses precomputed numbers so it does not call the eval APIs
+live.
 
 ---
 
@@ -411,7 +446,7 @@ Environment variables (see `.env.example`):
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `OPENAI_API_KEY` | — | Required for embeddings + chat |
-| `OPENAI_CHAT_MODEL` | `gpt-4o-mini` (example) | Chat model (override in `.env`) |
+| `OPENAI_CHAT_MODEL` | see `src/config.py` / `.env` | Chat model |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `TAVILY_API_KEY` | — | Enables web search |
 | `EMBEDDING_BACKEND` | `openai` | `openai` or `local` (offline test) |
@@ -425,21 +460,21 @@ Dependency versions are pinned in `requirements.txt`.
 
 ## Evaluation criteria mapping
 
-| Criterion | Points | Where in this project |
-|-----------|--------|------------------------|
-| **Problem description** | 2 | [Problem description](#problem-description) |
-| **Retrieval flow** (KB + LLM) | 2 | `src/retrieval.py`, `src/agent.py`, ChromaDB |
-| **Retrieval evaluation** (multiple approaches; best used) | 2 | `eval/retrieval_eval.py`, `eval/test_data/ground_truth.json`; app uses **hybrid+rr** |
-| **LLM evaluation** (multiple approaches; best used) | 2 | `eval/llm_eval.py` (prompts A/B/C); app uses **prompt C** in `src/agent.py` |
-| **Interface** | 2 | Streamlit multipage UI — `streamlit_app.py`, `views/` |
-| **Ingestion pipeline** | 2 | Prefect flow — `ingestion/ingest_pipeline.py` |
-| **Monitoring** (feedback + ≥5 charts) | 2 | Chat feedback + `views/dashboard.py` (6 charts + table) |
-| **Containerization** | 2 | `Dockerfile` + `docker-compose.yml` (ingest, app, dashboard) |
-| **Reproducibility** | 2 | This README, pinned `requirements.txt`, accessible `data/` |
-| **Hybrid search** | +1 | `src/retrieval.py` (`hybrid_search`) + retrieval eval |
-| **Document re-ranking** | +1 | `src/retrieval.py` (`rerank`) + retrieval eval |
-| **User query rewriting** | +1 | `src/retrieval.py` (`rewrite_query`) |
-| **Bonus: cloud deployment** | +2 | [Streamlit Cloud](#deployment-streamlit-cloud) |
+| Criterion | Where in this project |
+|-----------|------------------------|
+| **Problem description** | [Problem description](#problem-description) |
+| **Retrieval flow** (KB + LLM) | `src/retrieval.py`, `src/agent.py`, ChromaDB |
+| **Retrieval evaluation** (multiple approaches; best used) | `eval/retrieval_eval.py`, `eval/test_data/ground_truth.json`; app uses **hybrid+rr** |
+| **LLM evaluation** (multiple approaches; best used) | `eval/llm_eval.py` (prompts A/B/C); app uses **prompt C** in `src/agent.py` |
+| **Interface** | Streamlit multipage UI — `streamlit_app.py`, `views/` |
+| **Ingestion pipeline** | Prefect flow — `ingestion/ingest_pipeline.py` (with highlight filters) |
+| **Monitoring** (feedback + ≥5 charts) | Chat feedback + `views/dashboard.py` (6 charts + table) |
+| **Containerization** | `Dockerfile` + `docker-compose.yml` (ingest, app, dashboard) |
+| **Reproducibility** | This README, pinned `requirements.txt`, TAT catalog links + `data/` |
+| **Hybrid search** | `src/retrieval.py` (`hybrid_search`) + retrieval eval |
+| **Document re-ranking** | `src/retrieval.py` (`rerank`) + retrieval eval |
+| **User query rewriting** | `src/retrieval.py` (`rewrite_query`) |
+| **Bonus: cloud deployment** | [Streamlit Cloud](#deployment-streamlit-cloud) |
 
 ---
 
@@ -448,8 +483,8 @@ Dependency versions are pinned in `requirements.txt`.
 1. Clone the repo and use Python 3.10+.
 2. `pip install -r requirements.txt` (versions pinned).
 3. Copy `.env.example` → `.env` and set API keys.
-4. Ensure `data/attraction.json` and `data/activity.json` are present.
-5. Run `python -m ingestion.ingest_pipeline`.
+4. Download TAT JSON from the [attraction](https://datacatalog.tat.or.th/dataset/tourist-attraction) and [activity](https://datacatalog.tat.or.th/dataset/tourismactivity) catalog pages into `data/attraction.json` and `data/activity.json` (or use the copies already in the repo if present).
+5. Run `python -m ingestion.ingest_pipeline` (applies highlight filters).
 6. Run `streamlit run streamlit_app.py`.
 7. Optional quality checks:
    - `python -m eval.retrieval_eval`
@@ -460,5 +495,10 @@ Dependency versions are pinned in `requirements.txt`.
 
 ## Data attribution
 
-Tourism data © **Tourism Authority of Thailand (TAT)**. Included for
-educational / demo purposes.
+Tourism data © **Tourism Authority of Thailand (TAT)**, published via the
+[TAT Data Catalog](https://datacatalog.tat.or.th/) under Open Data Common:
+
+- [Tourist attractions](https://datacatalog.tat.or.th/dataset/tourist-attraction)
+- [Tourism activities](https://datacatalog.tat.or.th/dataset/tourismactivity)
+
+Included for educational / demo purposes.
