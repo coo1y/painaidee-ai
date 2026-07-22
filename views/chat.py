@@ -9,6 +9,7 @@ Called via ``chat.render()`` from ``streamlit_app.py``.
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -62,10 +63,13 @@ def apply_api_keys() -> None:
     """Apply user-entered API keys (from the sidebar) for this session.
 
     Keys typed into the sidebar live only in ``st.session_state`` (never written
-    to disk or ``os.environ``). We push them into ``config`` and reset the
-    cached OpenAI/Tavily clients so the new keys take effect immediately.
+    to disk). Server ``.env`` / Cloud secret values are stripped from the process
+    env so they cannot be used by accident.
     """
-    # Always overwrite — clearing the sidebar field must clear the in-memory key.
+    # Drop any server-side keys (.env / Streamlit secrets) from this process.
+    os.environ.pop("OPENAI_API_KEY", None)
+    os.environ.pop("TAVILY_API_KEY", None)
+
     config.OPENAI_API_KEY = (st.session_state.get("openai_api_key") or "").strip()
     config.TAVILY_API_KEY = (st.session_state.get("tavily_api_key") or "").strip()
 
